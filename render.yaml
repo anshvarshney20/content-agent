@@ -1,16 +1,14 @@
 # Render Blueprint — Daily Content Agent (API + Puter via Docker, React static)
 # https://render.com/docs/blueprint-spec
 #
-# 1) Push this repo to GitHub
-# 2) Render → New → Blueprint → select this file
-# 3) Fill secrets (sync: false)
-# 4) After deploy: cross-link Web URL ↔ API CORS / VITE_API_BASE_URL
+# Static sites: do NOT set plan (always free; "plan: free" breaks Blueprint validation).
+# Docker web: free plan may be unavailable on some accounts — omit plan to use default,
+# or set plan: starter if free Docker is rejected.
 
 services:
   - type: web
     name: daily-content-api
     runtime: docker
-    plan: free
     region: oregon
     dockerfilePath: ./Dockerfile
     dockerContext: .
@@ -56,7 +54,6 @@ services:
   - type: web
     name: daily-content-web
     runtime: static
-    plan: free
     rootDir: frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
