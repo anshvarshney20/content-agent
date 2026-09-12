@@ -1,0 +1,3 @@
+# Install on Render (API Web Service build):
+#   pip install -r requirements-render.txt
+-e .[saas]

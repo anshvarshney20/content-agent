@@ -1,0 +1,73 @@
+# Render Blueprint — Daily Content Agent (API + Puter via Docker, React static)
+# https://render.com/docs/blueprint-spec
+#
+# 1) Push this repo to GitHub
+# 2) Render → New → Blueprint → select this file
+# 3) Fill secrets (sync: false)
+# 4) After deploy: cross-link Web URL ↔ API CORS / VITE_API_BASE_URL
+
+services:
+  - type: web
+    name: daily-content-api
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      - key: APP__NAME
+        value: Daily Content Agent
+      - key: APP__ENVIRONMENT
+        value: production
+      - key: APP__LOG_LEVEL
+        value: INFO
+      - key: SAAS__ENABLED
+        value: "true"
+      - key: SAAS__CORS_ORIGINS
+        sync: false
+      - key: SAAS__CRON_SECRET
+        sync: false
+      - key: SAAS__ADMIN_EMAILS
+        sync: false
+      - key: SUPABASE__URL
+        sync: false
+      - key: SUPABASE__ANON_KEY
+        sync: false
+      - key: SUPABASE__SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE__STORAGE_BUCKET
+        value: post-images
+      - key: AI__PROVIDER
+        value: openrouter
+      - key: AI__API_KEY
+        sync: false
+      - key: AI__MODEL_NAME
+        value: deepseek/deepseek-v4-flash-0731
+      - key: IMAGE__PROVIDER
+        value: puter
+      - key: IMAGE__API_KEY
+        sync: false
+      - key: IMAGE__MODEL_NAME
+        value: openai/gpt-image-2
+      - key: DB__CONNECTION_STRING
+        value: sqlite:///tmp/daily_content_agent.db
+
+  - type: web
+    name: daily-content-web
+    runtime: static
+    plan: free
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false
+      - key: VITE_API_BASE_URL
+        sync: false

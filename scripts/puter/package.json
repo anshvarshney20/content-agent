@@ -1,0 +1,11 @@
+{
+  "name": "initials-puter-bridge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "auth": "node auth.mjs"
+  },
+  "dependencies": {
+    "@heyputer/puter.js": "^2.1.0"
+  }
+}

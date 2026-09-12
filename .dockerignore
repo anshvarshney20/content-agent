@@ -1,0 +1,14 @@
+# .dockerignore for API Docker image
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.env
+frontend/node_modules
+frontend/dist
+scripts/puter/node_modules
+*.db
+output
+.pytest_cache
+agent-transcripts
