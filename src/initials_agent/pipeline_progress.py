@@ -17,7 +17,7 @@ DEFAULT_STAGES: list[dict[str, Any]] = [
     {"id": "research", "name": "Research", "expected_s": 8},
     {"id": "topic", "name": "Topic Selection", "expected_s": 2},
     {"id": "writing", "name": "Writing", "expected_s": 25},
-    {"id": "visual", "name": "Visual Generation", "expected_s": 60},
+    {"id": "visual", "name": "Visual Generation", "expected_s": 90},
     {"id": "quality", "name": "Quality Control", "expected_s": 2},
     {"id": "save", "name": "Save & Sync", "expected_s": 6},
     {"id": "publish", "name": "Publishing", "expected_s": 12},

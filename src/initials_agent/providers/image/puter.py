@@ -14,7 +14,23 @@ from initials_agent.providers.image.http_util import ImageProviderError
 logger = logging.getLogger(__name__)
 
 DEFAULT_PUTER_MODEL = "openai/gpt-image-2"
-BRIDGE_DIR = Path(__file__).resolve().parents[4] / "scripts" / "puter"
+
+
+def _resolve_bridge_dir() -> Path:
+    """Find scripts/puter whether running from repo or editable install on Render."""
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[4] / "scripts" / "puter",  # .../src/initials_agent/providers/image → repo root
+        Path.cwd() / "scripts" / "puter",
+        Path("/app/scripts/puter"),
+    ]
+    for path in candidates:
+        if (path / "txt2img.mjs").exists():
+            return path
+    return candidates[0]
+
+
+BRIDGE_DIR = _resolve_bridge_dir()
 BRIDGE_SCRIPT = BRIDGE_DIR / "txt2img.mjs"
 
 
@@ -50,7 +66,7 @@ def _run_puter_bridge(
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=75,
+        timeout=150,
         check=False,
     )
     return completed.returncode, completed.stdout or "", completed.stderr or ""
@@ -104,8 +120,8 @@ class PuterImageProvider(ImageProvider):
                 )
             except subprocess.TimeoutExpired as exc:
                 raise ImageProviderError(
-                    "Puter image generation timed out after 75s. "
-                    "Check Puter token in Settings, then retry Generate."
+                    "Puter image generation timed out after 150s. "
+                    "Check Puter token in Settings / Render logs, then retry Generate."
                 ) from exc
 
             payload = None

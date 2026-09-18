@@ -4,6 +4,7 @@ import os
 import uuid
 
 from PIL import Image
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from initials_agent.config import get_settings
 from initials_agent.models.content import GeneratedAsset, VisualConcept
@@ -19,7 +20,8 @@ class ImageGenerationService:
         # Local dir only used if Supabase is not configured (legacy desktop)
         os.makedirs(self.output_dir, exist_ok=True)
 
-    # No Puter retry — fail/skip once so Visual stays under ~75s
+    # One quick retry for transient Puter/network blips (still capped by 150s timeout each)
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=6))
     async def _generate_with_retry(self, concept: VisualConcept) -> bytes:
         return await self.provider.generate_image(concept)
 
