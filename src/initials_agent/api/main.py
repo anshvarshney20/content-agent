@@ -1,6 +1,7 @@
 import os
 import uuid
 import asyncio
+import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
@@ -43,6 +44,7 @@ from initials_agent.tenant import (
 )
 
 app = FastAPI(title="Daily Content Agent API", version="1.0.0", description="Multi-brand sellable content product")
+logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 def _ensure_db():
@@ -161,42 +163,102 @@ async def tenant_auth_middleware(request, call_next):
 
 
 async def _hydrate_profile_from_cloud(user_id: str) -> None:
-    """If this user's local workspace is empty, pull brand fields from Supabase once."""
-    from initials_agent.saas.supabase_client import get_brands_for_user
+    """Pull brand + API keys from Supabase into the local workspace (Render disk is ephemeral)."""
+    from initials_agent.saas.supabase_client import (
+        get_brands_for_user,
+        get_provider_credentials,
+        get_social_connections_for_brand,
+        supabase_configured,
+    )
+    from initials_agent.tenant import save_credentials
+
+    if not supabase_configured():
+        return
 
     profile = load_profile()
-    if profile.business_name.strip() and profile.setup_complete:
-        return
     try:
         brands = await get_brands_for_user(user_id)
-    except Exception:
-        return
-    if not brands:
-        return
-    b = brands[0]
-    data = profile.model_dump()
-    for key in (
-        "business_name",
-        "positioning",
-        "audience",
-        "voice_notes",
-        "offer",
-        "proof_points",
-        "cta_text",
-        "website_url",
-        "active_niche_id",
-        "custom_niche_text",
-        "schedule_enabled",
-        "schedule_time",
-        "timezone",
-        "publish_mode",
-        "setup_complete",
-    ):
-        if key in b and b[key] is not None:
-            data[key] = b[key]
-    if data.get("business_name"):
-        data["setup_complete"] = bool(data.get("setup_complete") or True)
-        save_profile(BrandProfile.model_validate(data))
+    except Exception as exc:
+        logger.warning("hydrate brands failed: %s", exc)
+        brands = []
+
+    if brands:
+        b = brands[0]
+        data = profile.model_dump()
+        for key in (
+            "business_name",
+            "positioning",
+            "audience",
+            "voice_notes",
+            "offer",
+            "proof_points",
+            "cta_text",
+            "website_url",
+            "active_niche_id",
+            "custom_niche_text",
+            "schedule_enabled",
+            "schedule_time",
+            "timezone",
+            "publish_mode",
+            "setup_complete",
+        ):
+            if key in b and b[key] is not None and str(b[key]).strip() != "":
+                data[key] = b[key]
+        if data.get("business_name"):
+            data["setup_complete"] = bool(data.get("setup_complete") or True)
+            save_profile(BrandProfile.model_validate(data))
+
+        # Social tokens
+        try:
+            brand_id = str(b.get("id") or "")
+            if brand_id:
+                for row in await get_social_connections_for_brand(brand_id):
+                    plat = (row.get("platform") or "").lower()
+                    token = (row.get("access_token_encrypted") or "").strip()
+                    if not token:
+                        continue
+                    if plat == "linkedin":
+                        save_credentials(
+                            {
+                                "linkedin_access_token": token,
+                                "linkedin_author_urn": row.get("author_urn") or "",
+                            }
+                        )
+                    elif plat == "instagram":
+                        save_credentials(
+                            {
+                                "instagram_access_token": token,
+                                "instagram_account_id": row.get("account_id") or "",
+                                "instagram_location_id": row.get("location_id") or "",
+                                "instagram_location_name": row.get("location_name") or "",
+                                "public_base_url": row.get("public_base_url") or "",
+                            }
+                        )
+        except Exception as exc:
+            logger.warning("hydrate social connections failed: %s", exc)
+
+    # AI / Puter keys
+    try:
+        cred_updates: dict = {}
+        for row in await get_provider_credentials(user_id):
+            kind = (row.get("kind") or "").lower()
+            provider = (row.get("provider") or "").strip()
+            key = (row.get("api_key") or "").strip()
+            model = (row.get("model_name") or "").strip()
+            if kind == "ai" and key:
+                cred_updates["ai_provider"] = provider or "openrouter"
+                cred_updates["ai_api_key"] = key
+                if model:
+                    cred_updates["ai_model_name"] = model
+            elif kind == "image" and key:
+                cred_updates["image_provider"] = provider or "puter"
+                cred_updates["image_api_key"] = key
+                if model:
+                    cred_updates["image_model_name"] = model
+        if cred_updates:
+            save_credentials(cred_updates)
+    except Exception as exc:
+        logger.warning("hydrate provider credentials failed: %s", exc)
 
 
 @app.get("/api/niches")
@@ -392,7 +454,7 @@ class UpdateProfileRequest(BaseModel):
     setup_complete: Optional[bool] = None
 
 @app.put("/api/profile")
-def put_profile(req: UpdateProfileRequest):
+async def put_profile(req: UpdateProfileRequest):
     profile = load_profile()
     data = profile.model_dump()
     for key, value in req.model_dump(exclude_unset=True).items():
@@ -402,6 +464,36 @@ def put_profile(req: UpdateProfileRequest):
     if updated.business_name.strip() and updated.positioning.strip():
         updated.setup_complete = True if req.setup_complete is None else bool(req.setup_complete or updated.setup_complete)
     save_profile(updated)
+
+    # Durable store — Render local disk is wiped on sleep/redeploy
+    uid = current_user_id()
+    if uid and uid != "local" and supabase_configured():
+        try:
+            from initials_agent.saas.supabase_client import upsert_user_brand
+
+            await upsert_user_brand(
+                uid,
+                {
+                    "business_name": updated.business_name,
+                    "positioning": updated.positioning,
+                    "audience": updated.audience,
+                    "voice_notes": updated.voice_notes,
+                    "offer": updated.offer,
+                    "proof_points": updated.proof_points,
+                    "cta_text": updated.cta_text,
+                    "website_url": updated.website_url,
+                    "active_niche_id": updated.active_niche_id,
+                    "custom_niche_text": updated.custom_niche_text,
+                    "schedule_enabled": updated.schedule_enabled,
+                    "schedule_time": updated.schedule_time,
+                    "timezone": updated.timezone,
+                    "publish_mode": updated.publish_mode,
+                    "setup_complete": updated.setup_complete,
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to sync profile to Supabase: %s", exc)
+
     return {
         **updated.model_dump(),
         "niche_label": updated.niche_label(),
@@ -415,7 +507,7 @@ class UpdateLinkedInRequest(BaseModel):
 
 
 @app.post("/api/settings/linkedin")
-def update_linkedin_settings(req: UpdateLinkedInRequest):
+async def update_linkedin_settings(req: UpdateLinkedInRequest):
     token = (req.access_token or "").strip()
     if not token:
         token = cred_get("linkedin_access_token")
@@ -427,6 +519,23 @@ def update_linkedin_settings(req: UpdateLinkedInRequest):
     uid = current_user_id()
     if uid and uid != "local":
         save_credentials({"linkedin_access_token": token, "linkedin_author_urn": urn})
+        if supabase_configured():
+            try:
+                from initials_agent.saas.supabase_client import (
+                    get_brands_for_user,
+                    upsert_social_connection,
+                )
+
+                brands = await get_brands_for_user(uid)
+                if brands:
+                    await upsert_social_connection(
+                        str(brands[0]["id"]),
+                        "linkedin",
+                        access_token=token,
+                        author_urn=urn,
+                    )
+            except Exception as exc:
+                logger.warning("Failed to sync LinkedIn to Supabase: %s", exc)
     else:
         _set_env("LINKEDIN__ACCESS_TOKEN", token)
         _set_env("LINKEDIN__AUTHOR_URN", urn)
@@ -444,7 +553,7 @@ class UpdateInstagramRequest(BaseModel):
     location_name: Optional[str] = None
 
 @app.post("/api/settings/instagram")
-def update_instagram_settings(req: UpdateInstagramRequest):
+async def update_instagram_settings(req: UpdateInstagramRequest):
     token = (req.access_token or "").strip()
     if not token:
         token = cred_get("instagram_access_token")
@@ -467,6 +576,26 @@ def update_instagram_settings(req: UpdateInstagramRequest):
                 "instagram_location_name": loc_name,
             }
         )
+        if supabase_configured():
+            try:
+                from initials_agent.saas.supabase_client import (
+                    get_brands_for_user,
+                    upsert_social_connection,
+                )
+
+                brands = await get_brands_for_user(uid)
+                if brands:
+                    await upsert_social_connection(
+                        str(brands[0]["id"]),
+                        "instagram",
+                        access_token=token,
+                        account_id=account,
+                        location_id=loc_id,
+                        location_name=loc_name,
+                        public_base_url=public_base,
+                    )
+            except Exception as exc:
+                logger.warning("Failed to sync Instagram to Supabase: %s", exc)
     else:
         _set_env("INSTAGRAM__ACCESS_TOKEN", token)
         _set_env("INSTAGRAM__ACCOUNT_ID", account)
@@ -523,7 +652,7 @@ def get_ai_settings():
 
 
 @app.post("/api/settings/ai")
-def update_ai_settings(req: UpdateAISettingsRequest):
+async def update_ai_settings(req: UpdateAISettingsRequest):
     from initials_agent.runtime import _ai_api_key
 
     provider = (req.provider or "openrouter").lower().strip()
@@ -541,6 +670,15 @@ def update_ai_settings(req: UpdateAISettingsRequest):
         save_credentials(
             {"ai_provider": provider, "ai_api_key": key, "ai_model_name": model}
         )
+        if supabase_configured():
+            try:
+                from initials_agent.saas.supabase_client import upsert_provider_credentials
+
+                await upsert_provider_credentials(
+                    uid, "ai", provider=provider, api_key=key, model_name=model
+                )
+            except Exception as exc:
+                logger.warning("Failed to sync AI key to Supabase: %s", exc)
     else:
         from initials_agent.tenant import save_credentials as _save_local
 
@@ -1022,7 +1160,7 @@ def get_scheduler(session=Depends(get_session)):
 
 
 @app.put("/api/scheduler")
-def put_scheduler(req: UpdateSchedulerRequest):
+async def put_scheduler(req: UpdateSchedulerRequest):
     profile = load_profile()
     data = profile.model_dump()
     for key, value in req.model_dump(exclude_unset=True).items():
@@ -1043,6 +1181,33 @@ def put_scheduler(req: UpdateSchedulerRequest):
         enabled.append(updated.active_niche_id)
         updated.enabled_niche_ids = enabled
     save_profile(updated)
+
+    uid = current_user_id()
+    if uid and uid != "local" and supabase_configured():
+        try:
+            from initials_agent.saas.supabase_client import upsert_user_brand
+
+            await upsert_user_brand(
+                uid,
+                {
+                    "business_name": updated.business_name,
+                    "positioning": updated.positioning,
+                    "audience": updated.audience,
+                    "offer": updated.offer,
+                    "cta_text": updated.cta_text,
+                    "website_url": updated.website_url,
+                    "active_niche_id": updated.active_niche_id,
+                    "custom_niche_text": updated.custom_niche_text,
+                    "schedule_enabled": updated.schedule_enabled,
+                    "schedule_time": updated.schedule_time,
+                    "timezone": updated.timezone,
+                    "publish_mode": updated.publish_mode,
+                    "setup_complete": updated.setup_complete,
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to sync scheduler to Supabase: %s", exc)
+
     return {
         "status": "success",
         "schedule_enabled": updated.schedule_enabled,
@@ -1081,7 +1246,7 @@ class UpdateImageProviderRequest(BaseModel):
     model_name: Optional[str] = None
 
 @app.post("/api/settings/image")
-def update_image_settings(req: UpdateImageProviderRequest):
+async def update_image_settings(req: UpdateImageProviderRequest):
     settings = get_settings()
     provider = (req.provider or "puter").strip().lower() or "puter"
     # Legacy providers removed — Settings is Puter-first
@@ -1110,6 +1275,15 @@ def update_image_settings(req: UpdateImageProviderRequest):
         if model:
             payload["image_model_name"] = model
         save_credentials(payload)
+        if supabase_configured() and key:
+            try:
+                from initials_agent.saas.supabase_client import upsert_provider_credentials
+
+                await upsert_provider_credentials(
+                    uid, "image", provider=provider, api_key=key, model_name=model
+                )
+            except Exception as exc:
+                logger.warning("Failed to sync image key to Supabase: %s", exc)
     else:
         # Also persist to local credentials so Settings survives process restart
         if uid == "local" or not uid:

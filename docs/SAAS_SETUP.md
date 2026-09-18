@@ -18,6 +18,14 @@ You need these accounts and values before the web product can run end-to-end.
 5. Confirm **Storage** bucket `post-images` exists and is **public**.
 6. Auth → enable **Email** (magic link or password).
 
+## 1b. Persist Settings across Render restarts (required)
+
+Render’s disk is **ephemeral** (sleep / redeploy wipes local files). Run this SQL once so Settings survive:
+
+`supabase/migrations/003_provider_credentials.sql`
+
+Brand fields already live in `brands`. AI/Puter keys go in `provider_credentials` (service role only).
+
 ## 2. FastAPI env (server)
 
 Copy from `.env.example` into `.env` (or Render env vars):

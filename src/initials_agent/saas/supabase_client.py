@@ -171,6 +171,131 @@ async def upsert_user_brand(user_id: str, fields: dict) -> dict:
     raise RuntimeError("Failed to save brand profile")
 
 
+async def upsert_provider_credentials(
+    owner_id: str,
+    kind: str,
+    *,
+    provider: str,
+    api_key: str,
+    model_name: str = "",
+) -> dict:
+    """Save AI/image keys for a user (service role). Survives Render disk wipes."""
+    kind = (kind or "").strip().lower()
+    if kind not in {"ai", "image"}:
+        raise ValueError("kind must be ai or image")
+    existing = await supabase_rest(
+        "GET",
+        "provider_credentials",
+        params={"owner_id": f"eq.{owner_id}", "kind": f"eq.{kind}", "select": "id"},
+    )
+    payload = {
+        "owner_id": owner_id,
+        "kind": kind,
+        "provider": (provider or "").strip(),
+        "api_key": (api_key or "").strip(),
+        "model_name": (model_name or "").strip(),
+    }
+    if isinstance(existing, list) and existing:
+        rows = await supabase_rest(
+            "PATCH",
+            "provider_credentials",
+            params={"id": f"eq.{existing[0]['id']}", "select": "*"},
+            json_body=payload,
+            prefer="return=representation",
+        )
+    else:
+        rows = await supabase_rest(
+            "POST",
+            "provider_credentials",
+            json_body=payload,
+            prefer="return=representation",
+        )
+    if isinstance(rows, list) and rows:
+        return rows[0]
+    if isinstance(rows, dict):
+        return rows
+    raise RuntimeError("Failed to save provider credentials")
+
+
+async def get_provider_credentials(owner_id: str) -> list[dict]:
+    rows = await supabase_rest(
+        "GET",
+        "provider_credentials",
+        params={"owner_id": f"eq.{owner_id}", "select": "*"},
+    )
+    return rows if isinstance(rows, list) else []
+
+
+async def upsert_social_connection(
+    brand_id: str,
+    platform: str,
+    *,
+    access_token: str,
+    account_id: str | None = None,
+    author_urn: str | None = None,
+    location_id: str | None = None,
+    location_name: str | None = None,
+    public_base_url: str | None = None,
+) -> dict:
+    """Persist LinkedIn/Instagram tokens to Supabase (service role)."""
+    platform = (platform or "").strip().lower()
+    if platform not in {"linkedin", "instagram"}:
+        raise ValueError("platform must be linkedin or instagram")
+    existing = await supabase_rest(
+        "GET",
+        "social_connections",
+        params={
+            "brand_id": f"eq.{brand_id}",
+            "platform": f"eq.{platform}",
+            "select": "id",
+        },
+    )
+    payload: dict[str, Any] = {
+        "brand_id": brand_id,
+        "platform": platform,
+        "access_token_encrypted": access_token,
+    }
+    if account_id is not None:
+        payload["account_id"] = account_id
+    if author_urn is not None:
+        payload["author_urn"] = author_urn
+    if location_id is not None:
+        payload["location_id"] = location_id
+    if location_name is not None:
+        payload["location_name"] = location_name
+    if public_base_url is not None:
+        payload["public_base_url"] = public_base_url
+    if isinstance(existing, list) and existing:
+        rows = await supabase_rest(
+            "PATCH",
+            "social_connections",
+            params={"id": f"eq.{existing[0]['id']}", "select": "*"},
+            json_body=payload,
+            prefer="return=representation",
+        )
+    else:
+        rows = await supabase_rest(
+            "POST",
+            "social_connections",
+            json_body=payload,
+            prefer="return=representation",
+        )
+    if isinstance(rows, list) and rows:
+        return rows[0]
+    if isinstance(rows, dict):
+        return rows
+    raise RuntimeError("Failed to save social connection")
+
+
+async def get_social_connections_for_brand(brand_id: str) -> list[dict]:
+    rows = await supabase_rest(
+        "GET",
+        "social_connections",
+        params={"brand_id": f"eq.{brand_id}", "select": "*"},
+    )
+    return rows if isinstance(rows, list) else []
+
+
 async def upload_image_bytes(
     brand_id: str,
     filename: str,
