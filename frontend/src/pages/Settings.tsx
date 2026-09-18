@@ -95,8 +95,10 @@ export default function Settings() {
     setAiProvider(data.ai_provider || 'openrouter')
     setAiModel(data.ai_model || '')
     setAiKey('')
-    setImageProvider(data.image_provider || 'puter')
-    setImageModel(data.image_model || '')
+    setImageProvider(
+      ['puter', 'mock'].includes(data.image_provider) ? data.image_provider : 'puter',
+    )
+    setImageModel(data.image_model || 'openai/gpt-image-2')
     setImageKey('')
     setLiToken('')
     setLiUrn(data.linkedin_author_urn || '')
@@ -338,12 +340,12 @@ export default function Settings() {
           <div>
             <h2 className="text-base font-medium text-white">Connections</h2>
             <p className="text-xs text-gray-500 mt-1">
-              Leave API key blank to keep the current key. Saved into server <code className="text-subtle-cyan">.env</code>.
+              Keys are saved per account in Settings (not shared across users). Leave blank to keep the current key.
             </p>
           </div>
 
           <div className="space-y-3 border-t border-white/5 pt-4">
-            <h3 className="text-sm font-medium text-gray-200">AI writing</h3>
+            <h3 className="text-sm font-medium text-gray-200">AI writing (OpenRouter)</h3>
             <p className="text-xs text-gray-500 font-mono">{profile?.ai_key_masked || 'no key'}</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
@@ -355,11 +357,16 @@ export default function Settings() {
               </div>
               <div>
                 <label className={labelClass}>Model</label>
-                <input className={fieldClass} value={aiModel} onChange={(e) => setAiModel(e.target.value)} />
+                <input
+                  className={fieldClass}
+                  value={aiModel}
+                  onChange={(e) => setAiModel(e.target.value)}
+                  placeholder="deepseek/deepseek-v4-flash-0731"
+                />
               </div>
             </div>
             <div>
-              <label className={labelClass}>API key (new)</label>
+              <label className={labelClass}>OpenRouter API key (new)</label>
               <input
                 className={fieldClass}
                 type="password"
@@ -375,8 +382,8 @@ export default function Settings() {
           </div>
 
           <div className="space-y-3 border-t border-white/5 pt-4">
-            <h3 className="text-sm font-medium text-gray-200">Image generation</h3>
-            <p className="text-xs text-gray-500 font-mono">{profile?.image_key_masked || 'no key'}</p>
+            <h3 className="text-sm font-medium text-gray-200">Image generation (Puter + Node)</h3>
+            <p className="text-xs text-gray-500 font-mono">{profile?.image_key_masked || 'no key — add Puter token'}</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className={labelClass}>Provider</label>
@@ -386,19 +393,21 @@ export default function Settings() {
                   onChange={(e) => setImageProvider(e.target.value)}
                 >
                   <option value="puter">puter</option>
-                  <option value="openrouter">openrouter</option>
-                  <option value="dalle">dalle</option>
-                  <option value="gemini">gemini</option>
-                  <option value="mock">mock</option>
+                  <option value="mock">mock (placeholder)</option>
                 </select>
               </div>
               <div>
                 <label className={labelClass}>Model</label>
-                <input className={fieldClass} value={imageModel} onChange={(e) => setImageModel(e.target.value)} />
+                <input
+                  className={fieldClass}
+                  value={imageModel}
+                  onChange={(e) => setImageModel(e.target.value)}
+                  placeholder="openai/gpt-image-2"
+                />
               </div>
             </div>
             <div>
-              <label className={labelClass}>API key / Puter token (new)</label>
+              <label className={labelClass}>Puter auth token (new)</label>
               <input
                 className={fieldClass}
                 type="password"

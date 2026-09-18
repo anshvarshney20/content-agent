@@ -4,7 +4,6 @@ import os
 import uuid
 
 from PIL import Image
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from initials_agent.config import get_settings
 from initials_agent.models.content import GeneratedAsset, VisualConcept
@@ -20,7 +19,7 @@ class ImageGenerationService:
         # Local dir only used if Supabase is not configured (legacy desktop)
         os.makedirs(self.output_dir, exist_ok=True)
 
-    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=8))
+    # No Puter retry — fail/skip once so Visual stays under ~75s
     async def _generate_with_retry(self, concept: VisualConcept) -> bytes:
         return await self.provider.generate_image(concept)
 
@@ -53,28 +52,21 @@ class ImageGenerationService:
         if width < 100 or height < 100:
             raise ValueError(f"Image dimensions too small: {width}x{height}")
 
-        # Strip EXIF into clean buffer (no disk)
-        data = list(img.getdata())
-        safe_img = Image.new(img.mode, img.size)
-        safe_img.putdata(data)
+        # Fast re-encode (drops metadata). Avoid pixel-by-pixel getdata/putdata — that alone can take 30–60s.
+        safe_img = img.convert("RGB") if fmt_l in ("jpeg", "jpg") and img.mode not in ("RGB",) else img
         buf = io.BytesIO()
         if fmt_l == "png":
-            from PIL import PngImagePlugin
-
-            pnginfo = PngImagePlugin.PngInfo()
-            pnginfo.add_text("headline", concept.headline[:50])
-            pnginfo.add_text("subject", concept.visual_subject[:50])
-            safe_img.save(buf, format="PNG", pnginfo=pnginfo)
+            safe_img.save(buf, format="PNG", optimize=True)
             content_type = "image/png"
             ext = "png"
         elif fmt_l in ("jpeg", "jpg"):
             if safe_img.mode in ("RGBA", "P"):
                 safe_img = safe_img.convert("RGB")
-            safe_img.save(buf, format="JPEG", quality=92)
+            safe_img.save(buf, format="JPEG", quality=85, optimize=True)
             content_type = "image/jpeg"
             ext = "jpg"
         else:
-            safe_img.save(buf, format="WEBP", quality=90)
+            safe_img.save(buf, format="WEBP", quality=82)
             content_type = "image/webp"
             ext = "webp"
 

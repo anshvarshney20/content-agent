@@ -28,7 +28,7 @@ class OpenRouterLLMProvider(LLMProvider):
 
     async def generate_json(self, prompt: str, system_prompt: str, schema: type[T]) -> T:
         schema_json = json.dumps(schema.model_json_schema())
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=55.0) as client:
             response = await client.post(
                 OPENROUTER_CHAT_URL,
                 headers={

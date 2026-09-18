@@ -21,7 +21,7 @@ export function absUrl(url?: string) {
   return `${apiBase}${url.startsWith('/') ? '' : '/'}${url}`
 }
 
-export async function loadDrafts(token: string): Promise<Draft[]> {
+export async function loadDrafts(token: string, opts?: { localOnly?: boolean }): Promise<Draft[]> {
   // Local drafts for THIS account only (API scopes by JWT → tenant DB)
   const latestRes = await api.get('/api/content/latest').catch(() => null)
   let local: Draft[] = []
@@ -30,6 +30,11 @@ export async function loadDrafts(token: string): Promise<Draft[]> {
       ...d,
       state: d.status || d.state,
     }))
+  }
+
+  if (opts?.localOnly) {
+    local.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+    return local
   }
 
   try {

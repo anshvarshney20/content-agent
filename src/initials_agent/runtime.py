@@ -32,38 +32,47 @@ logger = logging.getLogger(__name__)
 
 
 def _ai_api_key() -> str:
-    from initials_agent.tenant import cred_get, current_user_id
+    """OpenRouter/OpenAI key from Settings (tenant credentials), not shared .env for SaaS users."""
+    from initials_agent.tenant import cred_get, current_user_id, load_credentials
 
-    # Per-user credentials first (isolated by email / auth id)
-    if current_user_id():
-        key = cred_get("ai_api_key")
+    uid = current_user_id()
+    if uid:
+        creds = load_credentials(uid)
+        key = _clean_secret(str(creds.get("ai_api_key") or ""))
         if key:
             return key
-        if cred_get("image_provider").lower() == "openrouter":
-            img = cred_get("image_api_key")
-            if img:
-                return img
-        # Authenticated tenant: do not fall through to shared server .env
-        if current_user_id() != "local":
+        # Optional: reuse OpenRouter image key only when AI provider is openrouter
+        if (creds.get("ai_provider") or "openrouter").lower() == "openrouter":
+            img_prov = (creds.get("image_provider") or "").lower()
+            if img_prov == "openrouter":
+                img = _clean_secret(str(creds.get("image_api_key") or ""))
+                if img:
+                    return img
+        # Authenticated tenant: never fall through to shared server .env
+        if uid != "local":
             return ""
 
     settings = get_settings()
     key = settings.ai.api_key.get_secret_value() if settings.ai.api_key else ""
-    key = (key or "").strip().strip("'").strip('"')
-    # Allow reusing the OpenRouter image key for writing when AI key is empty
+    key = _clean_secret(key)
     if not key and (settings.image.provider or "").lower() == "openrouter" and settings.image.api_key:
-        key = (settings.image.api_key.get_secret_value() or "").strip().strip("'").strip('"')
+        key = _clean_secret(settings.image.api_key.get_secret_value())
     return key
 
 
 def _ai_provider_and_model() -> tuple[str, str]:
-    from initials_agent.tenant import cred_get, current_user_id
+    from initials_agent.tenant import current_user_id, load_credentials
 
     settings = get_settings()
-    if current_user_id() and current_user_id() != "local":
-        provider = (cred_get("ai_provider") or "openrouter").lower().strip()
-        model = cred_get("ai_model_name") or settings.ai.model_name
-        return provider, model
+    uid = current_user_id()
+    if uid:
+        creds = load_credentials(uid)
+        if creds.get("ai_provider") or creds.get("ai_model_name") or creds.get("ai_api_key"):
+            provider = _clean_secret(str(creds.get("ai_provider") or "openrouter")).lower() or "openrouter"
+            model = _clean_secret(str(creds.get("ai_model_name") or "")) or settings.ai.model_name
+            return provider, model
+        if uid != "local":
+            return "openrouter", settings.ai.model_name
     return (settings.ai.provider or "openrouter").lower().strip(), settings.ai.model_name
 
 
@@ -96,27 +105,67 @@ def _clean_secret(value: str | None) -> str:
     return (value or "").strip().strip("'").strip('"')
 
 
+# Legacy / removed providers — map to Puter (Settings is source of truth).
+_LEGACY_IMAGE_PROVIDERS = frozenset({"bfl", "cloudflare", "pollinations", "nvidia", "flux"})
+
+
 def build_image_provider():
-    from initials_agent.tenant import cred_get, current_user_id
+    """Build image provider from Settings (tenant credentials), default Puter."""
+    from initials_agent.tenant import cred_get, current_user_id, load_credentials
 
     settings = get_settings()
-    if current_user_id() and current_user_id() != "local":
+    uid = current_user_id()
+    # Prefer per-account Settings credentials whenever present (SaaS + local)
+    creds = load_credentials(uid) if uid else {}
+    if creds.get("image_api_key") or creds.get("image_provider"):
+        key = _clean_secret(str(creds.get("image_api_key") or ""))
+        provider = _clean_secret(str(creds.get("image_provider") or "puter")).lower()
+        model = _clean_secret(str(creds.get("image_model_name") or "")) or _clean_secret(
+            settings.image.model_name
+        )
+    elif uid and uid != "local":
         key = cred_get("image_api_key")
-        provider = cred_get("image_provider", "puter").lower()
+        provider = (cred_get("image_provider") or "puter").lower()
         model = cred_get("image_model_name") or _clean_secret(settings.image.model_name)
     else:
         key = _clean_secret(settings.image.api_key.get_secret_value() if settings.image.api_key else "")
-        provider = _clean_secret(settings.image.provider).lower()
+        provider = _clean_secret(settings.image.provider).lower() or "puter"
         model = _clean_secret(settings.image.model_name)
-    if provider == "dalle" and key:
-        return DalleImageProvider(key)
-    if provider == "gemini" and key:
-        return GeminiImageProvider(key, model)
-    if provider == "openrouter" and key:
+
+    if provider in _LEGACY_IMAGE_PROVIDERS:
+        logger.warning(
+            "Image provider %r is no longer supported — using puter. "
+            "Add your Puter token in Settings (old key cleared).",
+            provider,
+        )
+        provider = "puter"
+        # BFL / Cloudflare keys are not Puter tokens
+        key = ""
+
+    if provider == "mock":
+        return MockImageProvider()
+    if not key:
+        from initials_agent.providers.image.base import ImageProvider
+        from initials_agent.providers.image.http_util import ImageProviderError
+
+        class _MissingImageKeyProvider(ImageProvider):
+            async def generate_image(self, concept):  # type: ignore[override]
+                raise ImageProviderError(
+                    "Puter token missing. Open Settings → Image generation and paste your Puter auth token."
+                )
+
+        logger.warning("No image API key in Settings — visual stage will fail until configured")
+        return _MissingImageKeyProvider()
+    if provider == "puter":
+        return PuterImageProvider(key, model or "openai/gpt-image-2")
+    if provider == "openrouter":
         return OpenRouterImageProvider(key, model)
-    if provider == "puter" and key:
-        return PuterImageProvider(key, model)
-    return MockImageProvider()
+    if provider == "dalle":
+        return DalleImageProvider(key)
+    if provider == "gemini":
+        return GeminiImageProvider(key, model)
+    logger.warning("Unknown image provider %r — using puter", provider)
+    return PuterImageProvider(key, model or "openai/gpt-image-2")
 
 
 def build_publishers(session):

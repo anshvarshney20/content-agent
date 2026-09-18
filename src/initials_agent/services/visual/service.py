@@ -266,14 +266,9 @@ Slides must read left-to-right as a swipe story (cover → value → brand → C
                 logger.warning("Visuals for %s failed (other platforms may still work): %s", platform, exc)
 
         if not assets:
-            # Last resort: one Instagram single shot
-            try:
-                logger.warning("Retrying one single Instagram image as last resort")
-                assets.append(await self._create_single(draft, "instagram"))
-            except Exception as exc:
-                raise RuntimeError(
-                    "No images generated. Puter timed out or failed. "
-                    "Check Node.js, IMAGE__API_KEY, or set IMAGE__PROVIDER=mock for a placeholder."
-                ) from exc
+            raise RuntimeError(
+                "No images generated. Puter timed out or failed. "
+                "Check Node.js and your Puter token in Settings."
+            )
         draft.assets.extend(assets)
         return assets

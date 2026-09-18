@@ -9,7 +9,7 @@ from initials_agent.services.strategist.service import StrategistDecision
 
 
 class ContentWriterService:
-    def __init__(self, llm: LLMProvider, max_retries: int = 3):
+    def __init__(self, llm: LLMProvider, max_retries: int = 2):
         self.llm = llm
         self.max_retries = max_retries
 

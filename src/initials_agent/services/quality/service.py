@@ -10,7 +10,7 @@ from initials_agent.services.quality.validators import run_deterministic_checks
 
 
 class QualityControlService:
-    def __init__(self, llm: LLMProvider, max_retries: int = 2):
+    def __init__(self, llm: LLMProvider, max_retries: int = 1):
         self.llm = llm
         self.max_retries = max_retries
         
@@ -43,7 +43,32 @@ class QualityControlService:
         
         return max(0.0, score), errors
 
-    async def check_quality(self, draft: ContentDraft, platform: str) -> QualityCheck:
+    def check_quality_fast(self, draft: ContentDraft, platform: str) -> QualityCheck:
+        """Deterministic-only QC — seconds, not an extra LLM round-trip."""
+        errors = run_deterministic_checks(draft, platform)
+        score = max(0.0, 100.0 - (len(errors) * 20.0))
+        if errors:
+            status = QualityStatus.FAIL if score < 60 else QualityStatus.NEEDS_REVISION
+            passed = False
+        else:
+            status = QualityStatus.PASS
+            passed = True
+            score = 92.0
+        return QualityCheck(
+            passed=passed,
+            status=status,
+            score=score,
+            errors=errors,
+            warnings=[],
+            improvements=["Fast deterministic QC"],
+        )
+
+    async def check_quality(
+        self, draft: ContentDraft, platform: str, *, use_llm: bool = True
+    ) -> QualityCheck:
+        if not use_llm:
+            return self.check_quality_fast(draft, platform)
+
         det_errors = run_deterministic_checks(draft, platform)
         
         # Build prompt for LLM review
@@ -67,13 +92,14 @@ class QualityControlService:
         )
         
         llm_review = None
-        for attempt in range(self.max_retries):
+        for attempt in range(max(1, self.max_retries)):
             try:
                 llm_review = await self.llm.generate_json(user_prompt, system_prompt, LLMQualityReview)
                 break
             except (ValueError, ValidationError, json.JSONDecodeError) as e:
-                if attempt == self.max_retries - 1:
-                    raise RuntimeError("Failed to run LLM quality check")
+                if attempt == max(1, self.max_retries) - 1:
+                    # Fall back to fast QC instead of failing the whole pipeline
+                    return self.check_quality_fast(draft, platform)
                 user_prompt += f"\nError: {e}. Output valid JSON."
 
         final_score, errors = self._calculate_final_score(llm_review, det_errors)

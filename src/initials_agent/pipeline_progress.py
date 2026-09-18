@@ -12,15 +12,15 @@ PROGRESS_PREFIX = "PROGRESS_JSON:"
 _lock = threading.Lock()
 _LIVE: dict[str, dict[str, Any]] = {}
 
-# Typical wall times from local Puter + AI runs (seconds).
+# Typical wall times for fast path (deterministic QC + single Puter image).
 DEFAULT_STAGES: list[dict[str, Any]] = [
-    {"id": "research", "name": "Research", "expected_s": 12},
-    {"id": "topic", "name": "Topic Selection", "expected_s": 3},
-    {"id": "writing", "name": "Writing", "expected_s": 35},
-    {"id": "visual", "name": "Visual Generation", "expected_s": 75},
-    {"id": "quality", "name": "Quality Control", "expected_s": 12},
-    {"id": "save", "name": "Save & Sync", "expected_s": 8},
-    {"id": "publish", "name": "Publishing", "expected_s": 15},
+    {"id": "research", "name": "Research", "expected_s": 8},
+    {"id": "topic", "name": "Topic Selection", "expected_s": 2},
+    {"id": "writing", "name": "Writing", "expected_s": 25},
+    {"id": "visual", "name": "Visual Generation", "expected_s": 60},
+    {"id": "quality", "name": "Quality Control", "expected_s": 2},
+    {"id": "save", "name": "Save & Sync", "expected_s": 6},
+    {"id": "publish", "name": "Publishing", "expected_s": 12},
 ]
 
 
@@ -255,9 +255,14 @@ def enrich_progress(progress: dict[str, Any] | None, *, run_status: str) -> dict
             current_name = stage.get("name")
             frac = 0.0
             if adj_expected > 0 and elapsed is not None:
-                frac = min(0.92, elapsed / adj_expected)
+                # Soft-cap progress so a long Puter call doesn't look "done"
+                frac = min(0.85, elapsed / max(adj_expected, elapsed * 0.5 + 1))
             weight_done += expected * frac
-            left = max(3.0, adj_expected - (elapsed or 0))
+            if elapsed is not None and elapsed > adj_expected:
+                # Overrun: estimate a bit more time instead of fake "~3s left"
+                left = max(15.0, min(90.0, elapsed * 0.25))
+            else:
+                left = max(5.0, adj_expected - (elapsed or 0))
             eta_remaining += left
             time_label = f"{format_duration(elapsed)} | ~{format_duration(left)} left"
         else:

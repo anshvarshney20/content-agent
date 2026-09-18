@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useOutletContext } from 'react-router-dom'
 import { Play, Clock3, RefreshCw } from 'lucide-react'
 import type { Session } from '@supabase/supabase-js'
@@ -43,19 +43,27 @@ export default function DashboardHome() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [pipeline, setPipeline] = useState<PipelineStatus | null>(null)
   const [runsLoading, setRunsLoading] = useState(true)
+  const nicheLoaded = useRef(false)
 
   async function load(opts?: { soft?: boolean }) {
     if (!opts?.soft) setRunsLoading(true)
     try {
-      const [statsRes, runsRes, profileRes] = await Promise.allSettled([
-        api.get('/api/stats'),
-        api.get('/api/pipeline/runs'),
-        api.get('/api/profile'),
-      ])
-      if (statsRes.status === 'fulfilled') setStats(statsRes.value.data)
-      if (runsRes.status === 'fulfilled') setRuns((runsRes.value.data || []).slice(0, 8))
-      if (profileRes.status === 'fulfilled') setNicheLabel(profileRes.value.data.niche_label || '')
-      setDrafts(await loadDrafts(token))
+      const tasks: Promise<unknown>[] = [
+        api.get('/api/stats').then((r) => setStats(r.data)),
+        api.get('/api/pipeline/runs').then((r) => setRuns((r.data || []).slice(0, 8))),
+      ]
+      if (!opts?.soft || !nicheLoaded.current) {
+        tasks.push(
+          api.get('/api/profile').then((r) => {
+            setNicheLabel(r.data.niche_label || '')
+            nicheLoaded.current = true
+          }),
+        )
+      }
+      if (!opts?.soft) {
+        tasks.push(loadDrafts(token).then(setDrafts))
+      }
+      await Promise.allSettled(tasks)
     } finally {
       setRunsLoading(false)
     }
@@ -75,21 +83,20 @@ export default function DashboardHome() {
   useEffect(() => {
     load().catch(() => {})
     pollStatus(activeRunId).catch(() => {})
+
+    const running = Boolean(activeRunId) || busy
+    // Idle: light poll every 12s. Generating: status every 2s, skip heavy lists.
+    const intervalMs = running ? 2000 : 12000
     const t = setInterval(() => {
-      // Soft poll only — skip heavy draft merge every tick
-      Promise.allSettled([
-        api.get('/api/stats'),
-        api.get('/api/pipeline/runs'),
-        api.get('/api/profile'),
-      ]).then(([statsRes, runsRes, profileRes]) => {
-        if (statsRes.status === 'fulfilled') setStats(statsRes.value.data)
-        if (runsRes.status === 'fulfilled') setRuns((runsRes.value.data || []).slice(0, 8))
-        if (profileRes.status === 'fulfilled') setNicheLabel(profileRes.value.data.niche_label || '')
-      })
-      pollStatus(activeRunId).catch(() => {})
-    }, 4000)
+      if (running) {
+        pollStatus(activeRunId).catch(() => {})
+      } else {
+        load({ soft: true }).catch(() => {})
+        pollStatus(null).catch(() => {})
+      }
+    }, intervalMs)
     return () => clearInterval(t)
-  }, [token, activeRunId])
+  }, [token, activeRunId, busy])
 
   async function generate() {
     setBusy(true)
@@ -104,7 +111,7 @@ export default function DashboardHome() {
       setActiveRunId(runId)
       await pollStatus(runId)
 
-      for (let i = 0; i < 120; i++) {
+      for (let i = 0; i < 180; i++) {
         await new Promise((r) => setTimeout(r, 2000))
         const st = await pollStatus(runId)
         if (!st) continue
@@ -123,6 +130,7 @@ export default function DashboardHome() {
       setMsg(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
+      setActiveRunId(null)
     }
   }
 

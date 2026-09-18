@@ -50,7 +50,7 @@ def _run_puter_bridge(
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=180,
+        timeout=75,
         check=False,
     )
     return completed.returncode, completed.stdout or "", completed.stderr or ""
@@ -104,8 +104,8 @@ class PuterImageProvider(ImageProvider):
                 )
             except subprocess.TimeoutExpired as exc:
                 raise ImageProviderError(
-                    "Puter image generation timed out after 180s. "
-                    "Retry Generate, or set IMAGE__PROVIDER=mock."
+                    "Puter image generation timed out after 75s. "
+                    "Check Puter token in Settings, then retry Generate."
                 ) from exc
 
             payload = None

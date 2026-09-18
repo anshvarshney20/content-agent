@@ -214,7 +214,7 @@ class DailyContentAgent:
                 self.session.rollback()
                 return None
 
-            # VISUAL & IMAGE — one Instagram image to Supabase (reliable); skip dual LinkedIn+carousel
+            # VISUAL & IMAGE — one Instagram image (Puter). No second full retry (keeps run ≤~5 min).
             assets = []
             if not options.no_image:
                 _progress("visual")
@@ -224,24 +224,19 @@ class DailyContentAgent:
                         raise RuntimeError("Visual returned no assets")
                     _done("visual")
                 except Exception as e:
-                    logger.warning("Visual first attempt failed, retrying single image: %s", e)
-                    try:
-                        assets = [await self.visual._create_single(draft, "instagram")]
-                        _done("visual")
-                    except Exception as e2:
-                        logger.warning("Visual generation skipped so copy can still ship: %s", e2)
-                        skip_stage(progress, "visual", reason=str(e2)[:120])
-                        write_progress(self.session, options.pipeline_run_id, progress)
+                    logger.warning("Visual generation skipped so copy can still ship: %s", e)
+                    skip_stage(progress, "visual", reason=str(e)[:120])
+                    write_progress(self.session, options.pipeline_run_id, progress)
 
             if _run_cancelled():
                 logger.info("Pipeline %s cancelled after visuals — aborting", options.pipeline_run_id)
                 self.session.rollback()
                 return None
 
-            # QUALITY CONTROL
+            # QUALITY CONTROL — deterministic only (skips 2× OpenRouter LLM calls ≈ 1–3 min)
             _progress("quality")
-            quality_li = await self.quality.check_quality(draft, "linkedin")
-            quality_ig = await self.quality.check_quality(draft, "instagram")
+            quality_li = await self.quality.check_quality(draft, "linkedin", use_llm=False)
+            quality_ig = await self.quality.check_quality(draft, "instagram", use_llm=False)
             lowest_score = min(quality_li.score, quality_ig.score)
             errors = quality_li.errors + quality_ig.errors
             

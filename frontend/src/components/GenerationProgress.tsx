@@ -86,7 +86,7 @@ export default function GenerationProgress({
             else if (st === 'failed') fill = 100
             else if (st === 'running') {
               const elapsed = typeof s.elapsed_s === 'number' ? s.elapsed_s : 0
-              fill = Math.min(92, Math.max(6, Math.round((elapsed / expected) * 100)))
+              fill = Math.min(85, Math.max(6, Math.round((elapsed / Math.max(expected, elapsed * 0.5 + 1)) * 100)))
             }
 
             return (

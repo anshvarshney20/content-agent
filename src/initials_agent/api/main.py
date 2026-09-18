@@ -323,6 +323,10 @@ def get_profile():
         image_model = cred_get("image_model_name") or settings.image.model_name
         image_key = cred_get("image_api_key")
     else:
+        # Prefer local Settings credentials over .env when present
+        from initials_agent.tenant import load_credentials
+
+        local_creds = load_credentials("local")
         li_token = settings.linkedin.access_token.get_secret_value() if settings.linkedin.access_token else ""
         ig_token = settings.instagram.access_token.get_secret_value() if settings.instagram.access_token else ""
         author_urn = settings.linkedin.author_urn or ""
@@ -330,12 +334,19 @@ def get_profile():
         public_base = settings.app.public_base_url or ""
         ig_loc_id = settings.instagram.location_id or ""
         ig_loc_name = settings.instagram.location_name or ""
-        ai_provider = settings.ai.provider
-        ai_model = settings.ai.model_name
-        image_provider = settings.image.provider
-        image_model = settings.image.model_name
-        image_key = settings.image.api_key.get_secret_value() if settings.image.api_key else ""
+        ai_provider = local_creds.get("ai_provider") or settings.ai.provider
+        ai_model = local_creds.get("ai_model_name") or settings.ai.model_name
+        image_provider = local_creds.get("image_provider") or settings.image.provider or "puter"
+        image_model = local_creds.get("image_model_name") or settings.image.model_name
+        image_key = local_creds.get("image_api_key") or (
+            settings.image.api_key.get_secret_value() if settings.image.api_key else ""
+        )
 
+    # Normalize removed providers in the UI
+    if str(image_provider).lower() in {"bfl", "cloudflare", "pollinations", "nvidia", "flux"}:
+        image_provider = "puter"
+        image_key = ""  # old keys are not Puter tokens
+        image_model = image_model or "openai/gpt-image-2"
     return {
         **profile.model_dump(),
         "niche_label": profile.niche_label(),
@@ -531,6 +542,12 @@ def update_ai_settings(req: UpdateAISettingsRequest):
             {"ai_provider": provider, "ai_api_key": key, "ai_model_name": model}
         )
     else:
+        from initials_agent.tenant import save_credentials as _save_local
+
+        _save_local(
+            {"ai_provider": provider, "ai_api_key": key, "ai_model_name": model},
+            user_id="local",
+        )
         _set_env("AI__PROVIDER", provider)
         _set_env("AI__API_KEY", key)
         _set_env("AI__MODEL_NAME", model)
@@ -566,20 +583,28 @@ def get_stats(session = Depends(get_session)):
 
 @app.get("/api/pipeline/runs")
 def get_recent_runs(session = Depends(get_session)):
-    runs = session.query(PipelineRunModel).order_by(PipelineRunModel.created_at.desc()).limit(10).all()
-    drafts = (
-        session.query(ContentDraftModel)
-        .order_by(ContentDraftModel.created_at.desc())
-        .limit(30)
-        .all()
+    runs = session.query(PipelineRunModel).order_by(PipelineRunModel.created_at.desc()).limit(8).all()
+    # Lightweight topic lookup — only when progress JSON lacks topic_title
+    need_draft_match = any(
+        r.status == "success"
+        and not ((get_live_progress(r.id) or decode_progress(r.logs) or {}).get("topic_title"))
+        for r in runs
     )
+    drafts = []
+    if need_draft_match:
+        drafts = (
+            session.query(ContentDraftModel)
+            .order_by(ContentDraftModel.created_at.desc())
+            .limit(15)
+            .all()
+        )
     res = []
     for r in runs:
         topic = "—"
         progress = get_live_progress(r.id) or decode_progress(r.logs)
         if progress and progress.get("topic_title"):
             topic = str(progress["topic_title"])
-        elif r.status == "success":
+        elif r.status == "success" and drafts:
             # Match draft created near this run (not always "latest draft")
             run_ts = r.created_at
             best = None
@@ -839,7 +864,19 @@ async def trigger_pipeline(req: RunPipelineRequest, background_tasks: Background
 
 @app.get("/api/content/latest")
 def get_latest_content(session = Depends(get_session)):
-    drafts = session.query(ContentDraftModel).order_by(ContentDraftModel.created_at.desc()).limit(10).all()
+    drafts = session.query(ContentDraftModel).order_by(ContentDraftModel.created_at.desc()).limit(8).all()
+    if not drafts:
+        return []
+    draft_ids = [d.id for d in drafts]
+    all_assets = (
+        session.query(GeneratedAssetModel)
+        .filter(GeneratedAssetModel.draft_id.in_(draft_ids))
+        .all()
+    )
+    assets_by_draft: dict = {}
+    for a in all_assets:
+        assets_by_draft.setdefault(a.draft_id, []).append(a)
+
     res = []
     from initials_agent.services.approval.local import (
         caption_with_hashtags,
@@ -847,7 +884,7 @@ def get_latest_content(session = Depends(get_session)):
     )
 
     for d in drafts:
-        assets = session.query(GeneratedAssetModel).filter_by(draft_id=d.id).all()
+        assets = assets_by_draft.get(d.id, [])
         hashtags = d.hashtags or []
         ig = caption_with_hashtags(d.instagram_caption or "", hashtags)
         paths = instagram_image_paths_from_assets(assets)
@@ -1046,25 +1083,42 @@ class UpdateImageProviderRequest(BaseModel):
 @app.post("/api/settings/image")
 def update_image_settings(req: UpdateImageProviderRequest):
     settings = get_settings()
-    provider = (req.provider or "").strip().lower()
+    provider = (req.provider or "puter").strip().lower() or "puter"
+    # Legacy providers removed — Settings is Puter-first
+    if provider in {"bfl", "cloudflare", "pollinations", "nvidia", "flux"}:
+        provider = "puter"
+    allowed = {"puter", "openrouter", "dalle", "gemini", "mock"}
+    if provider not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image provider must be one of: {', '.join(sorted(allowed))}",
+        )
     key = (req.api_key or "").strip()
     uid = current_user_id()
-    if not provider:
-        raise HTTPException(status_code=400, detail="Image provider is required")
     if not key:
         if uid and uid != "local":
             key = cred_get("image_api_key")
         elif settings.image.api_key:
             key = (settings.image.api_key.get_secret_value() or "").strip()
     if not key and provider != "mock":
-        raise HTTPException(status_code=400, detail="Image API key is required")
+        raise HTTPException(status_code=400, detail="Image API key / Puter token is required")
     model = (req.model_name or "").strip()
+    if not model:
+        model = "openai/gpt-image-2" if provider == "puter" else (settings.image.model_name or "")
     if uid and uid != "local":
         payload = {"image_provider": provider, "image_api_key": key}
         if model:
             payload["image_model_name"] = model
         save_credentials(payload)
     else:
+        # Also persist to local credentials so Settings survives process restart
+        if uid == "local" or not uid:
+            from initials_agent.tenant import save_credentials as _save_local
+
+            payload = {"image_provider": provider, "image_api_key": key}
+            if model:
+                payload["image_model_name"] = model
+            _save_local(payload, user_id="local")
         _set_env("IMAGE__PROVIDER", provider)
         if key:
             _set_env("IMAGE__API_KEY", key)
@@ -1075,6 +1129,7 @@ def update_image_settings(req: UpdateImageProviderRequest):
         "image_provider": provider,
         "image_ready": bool(key) or provider == "mock",
         "image_key_masked": _mask_secret(key),
+        "image_model": model,
     }
 
 # In-memory job state store for visual generation (In production, use Redis or DB with background worker)
